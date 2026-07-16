@@ -22,7 +22,7 @@ PASS/FAIL.
 
 | Probe | Flow | What it exercises |
 |---|---|---|
-| `_probe_merge_conflict.{bat,_restore.bat}` | Cold-start, bootstrap modal-tick drain | Up to three simultaneous drifts (AssetRegistry + DynamicHandle + EntitySpawnParams) resolved in a single bootstrap cycle, followed by PostCompile canonical regen + stub cleanup. Each strategy independently skips if no callable target exists. |
+| `_probe_merge_conflict.{bat,_restore.bat}` | Cold-start, bootstrap modal-tick drain + boot pre-seed | Up to three simultaneous drifts (AssetRegistry + DynamicHandle + EntitySpawnParams): DH is healed proactively by the StartupModule pre-seed (G12) BEFORE the first compile; AR + ESP resolve via the bootstrap modal-tick cycle; all followed by PostCompile canonical regen + stub cleanup. Each strategy independently skips if no callable target exists. |
 | `_probe_mid_session_add.{bat,_restore.bat}` | Mid-session, FTSTicker drain | A new `.as` file referencing up to three unresolved symbols dropped at runtime; mid-session ticker fires strategies across multiple cycles as hot-reload retries surface each error. |
 | `_probe_tier3_{corrupt.bat,restore.bat}` | Tier 3 refusal validation | Calls a deliberately-fake asset accessor. Validates the post-2026-05-13 dispatcher behavior: Tier 1/2 fail → Tier 3 refuses → actionable banner surfaces instead of editor wedging on a parser-blind derivative error. |
 | `_probe_assetregistry_loop.{bat,_restore.bat}` | Mid-session, AR-only — loop-detection | Drops an AS class that calls exactly ONE unresolved `assets::X()`. Positive: AR stub synth + AR regen-completed each fire ≥1 time. **Negative (the bug pin)**: after the first `Asset Registry generation completed` line, ZERO further `OnReloadHadErrors fired (mid-session mode, cycle N of 3)` lines may appear — pins the post-2026-05-21 PostCompile-ordering bug (Delete_AllStubRecoveryFiles runs sync before the deferred AR regen ticker has rewritten canonical → hot-reload re-fires → loop). |
@@ -95,21 +95,33 @@ Verifier exit codes:
 
 ### Expected output snapshot (merge_conflict, 10/10 PASS)
 
+> **DH leg is pre-seed-healed since the CkAngelscriptGenerator boot pre-seed (G12):**
+> a cold-start DH drift never reaches the dispatcher anymore — the StartupModule
+> pre-seed scans AS source for `asset X of UCkDynamic_HandleDefinition` blocks and
+> seeds the missing entry into the sibling BEFORE the first compile. The verifier
+> therefore expects the `Pre-seeded N DynamicHandle stub entry(ies)` line instead of
+> the dispatcher's `DynamicHandle: synthesized JSON stub entry` line, and the generic
+> bootstrap-drain events (`OnReloadHadErrors` / `Queued` / `Modal-tick` / `Cycle N`)
+> are only expected when an ESP or AR drift is present. The deferred-regen and
+> stub-cleanup expectations are unchanged (the pre-seeded sibling rides the same
+> rails). Mid-session DH synthesis (`_probe_mid_session_add`) still goes through the
+> dispatcher and is untouched.
+
 ```
 Project: BusterBlock
 Verifying against log: D:/Repos/BusterBlock/Saved/Logs/BusterBlock.log
 Sidecar: 3 strategy/strategies drifted
 
-[PASS] @ 2026.05.14-01.03.56:495 — OnReloadHadErrors fired (bootstrap mode) (anywhere)
-[PASS] @ 2026.05.14-01.03.56:495 — Queued recovery action(s) for bootstrap modal-tick apply (anywhere)
-[PASS] @ 2026.05.14-01.03.57:462 — Modal-tick deferred apply firing — draining N pending action(s) (anywhere)
-[PASS] @ 2026.05.14-01.03.57:463 — DynamicHandle: synthesized JSON stub entry for 'FCk_Handle_CharacterAttachPoints' (anywhere)
-[PASS] @ 2026.05.14-01.03.57:833 — Synthesized stub for UBb_CheckoutCounter_DepositOrchestrator_EntityScript::Params (anywhere)
-[PASS] @ 2026.05.14-01.03.57:833 — Synthesized AssetRegistry stub for assets::TestItem_BB_IDA (anywhere)
-[PASS] @ 2026.05.14-01.03.57:833 — Cycle N applied N strategy/strategies (bootstrap) (anywhere)
-[PASS] @ 2026.05.14-01.04.09:614 — DynamicHandle deferred regen fired (PostCompile sibling-detect OR OnPostEngineInit deferred) (anywhere)
-[PASS] @ 2026.05.14-01.04.44:578 — PostCompile settled (shader idle AND AR idle) — AssetRegistry regen firing (anywhere)
-[PASS] @ 2026.05.14-01.04.03:325 — Self-heal stub file served its purpose — deleting: (anywhere)
+[PASS] @ ... — OnReloadHadErrors fired (bootstrap mode) (anywhere)
+[PASS] @ ... — Queued recovery action(s) for bootstrap modal-tick apply (anywhere)
+[PASS] @ ... — Modal-tick deferred apply firing — draining N pending action(s) (anywhere)
+[PASS] @ ... — DhPreSeed: pre-seeded stub entry for 'FCk_Handle_CharacterAttachPoints' (anywhere)
+[PASS] @ ... — Synthesized stub for UBb_CheckoutCounter_DepositOrchestrator_EntityScript::Params (anywhere)
+[PASS] @ ... — Synthesized AssetRegistry stub for assets::TestItem_BB_IDA (anywhere)
+[PASS] @ ... — Cycle N applied N strategy/strategies (bootstrap) (anywhere)
+[PASS] @ ... — DynamicHandle deferred regen fired (PostCompile sibling-detect OR OnPostEngineInit deferred) (anywhere)
+[PASS] @ ... — PostCompile settled (shader idle AND AR idle) — AssetRegistry regen firing (anywhere)
+[PASS] @ ... — Self-heal stub file served its purpose — deleting: (anywhere)
 
 VERDICT: 10 of 10 events matched. PROBE PASSED.
 ```

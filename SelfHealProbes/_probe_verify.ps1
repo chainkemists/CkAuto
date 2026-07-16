@@ -110,17 +110,27 @@ if ($Probe -eq 'merge_conflict') {
         exit 0
     }
 
-    $events += New-Event 'OnReloadHadErrors fired (bootstrap mode)' 'OnReloadHadErrors fired \(bootstrap mode, cycle \d+ of 3\)\. Parsed \d+ actionable roots' -Anywhere
-    $events += New-Event 'Queued recovery action(s) for bootstrap modal-tick apply' 'Queued \d+ recovery action\(s\) for bootstrap modal-tick apply' -Anywhere
-    $events += New-Event 'Modal-tick deferred apply firing — draining N pending action(s)' 'Modal-tick deferred apply firing — draining \d+ pending action\(s\)' -Anywhere
+    # The bootstrap dispatcher drain only fires when a drift actually FAILS the
+    # first compile. Cold-start DH drift no longer does — the boot pre-seed
+    # (CkAngelscriptGenerator G12) seeds the missing entry into the sibling
+    # BEFORE the first compile — so the generic drain events are only expected
+    # when an ESP or AR drift is present.
+    if ($drifts.EntitySpawnParams -or $drifts.AssetRegistry) {
+        $events += New-Event 'OnReloadHadErrors fired (bootstrap mode)' 'OnReloadHadErrors fired \(bootstrap mode, cycle \d+ of 3\)\. Parsed \d+ actionable roots' -Anywhere
+        $events += New-Event 'Queued recovery action(s) for bootstrap modal-tick apply' 'Queued \d+ recovery action\(s\) for bootstrap modal-tick apply' -Anywhere
+        $events += New-Event 'Modal-tick deferred apply firing — draining N pending action(s)' 'Modal-tick deferred apply firing — draining \d+ pending action\(s\)' -Anywhere
+    }
 
     # Per-strategy stub-synthesis events. Anywhere-search because the dispatcher
     # emits them in classifier-iteration order which varies, and strategies may
     # re-fire across multiple cycles (semantic check is "did this happen?").
     if ($drifts.DynamicHandle) {
+        # Pre-seed heals the cold-start DH drift proactively: expect the
+        # StartupModule pre-seed line naming the drifted TypeName instead of
+        # the dispatcher's modal-path synthesis.
         $h = [regex]::Escape($drifts.DynamicHandle.TypeName)
-        $events += New-Event "DynamicHandle: synthesized JSON stub entry for '$($drifts.DynamicHandle.TypeName)'" `
-                            "DynamicHandle: synthesized JSON stub entry for '$h'" -Anywhere
+        $events += New-Event "DhPreSeed: pre-seeded stub entry for '$($drifts.DynamicHandle.TypeName)'" `
+                            "Pre-seeded \d+ DynamicHandle stub entry\(ies\) from AS source scan: \[[^\]]*$h" -Anywhere
     }
     if ($drifts.EntitySpawnParams) {
         $n = [regex]::Escape($drifts.EntitySpawnParams.Namespace)
@@ -133,7 +143,9 @@ if ($Probe -eq 'merge_conflict') {
                             "Synthesized AssetRegistry stub for assets::$a" -Anywhere
     }
 
-    $events += New-Event 'Cycle N applied N strategy/strategies (bootstrap)' 'Cycle \d+ applied \d+ strategy/strategies\. Hot-reload' -Anywhere
+    if ($drifts.EntitySpawnParams -or $drifts.AssetRegistry) {
+        $events += New-Event 'Cycle N applied N strategy/strategies (bootstrap)' 'Cycle \d+ applied \d+ strategy/strategies\. Hot-reload' -Anywhere
+    }
 
     if ($drifts.DynamicHandle) {
         $events += New-Event 'DynamicHandle deferred regen fired (PostCompile sibling-detect OR OnPostEngineInit deferred)' `
