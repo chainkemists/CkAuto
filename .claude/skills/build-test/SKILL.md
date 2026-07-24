@@ -17,17 +17,36 @@ The toolbox handles engine resolution, plugin paths, and the UBT / automation in
 
 The default is a **single** `--build --test` invocation writing **one** log (`Saved/Logs/BuildTest.log`). This is deliberate: the toolbox pops one LogViewer progress window at build start and reuses it through the test phase, so you watch the **entire** process — build → editor boot → tests — in one continuous window, with the build lines auto-colored as `msbuild` and the editor lines as `unreal` (segmented parsing). Two separate invocations would pop two sequential windows and split the log in two; use the [Separate-logs variant](#separate-logs-variant-two-invocations) below only when you specifically want the two logs apart.
 
-## Pre-flight: wait if another editor is running
+## Decide: build path or test-only path
 
-The toolbox spawns its own editor. If a different editor (another Claude session, a manually-opened editor, or a previous toolbox run that didn't shut down cleanly) is already up on the same project, two editors will fight over the same Saved/Intermediate directories and the build will fail in confusing ways. **Always run this check once before the single build+test invocation below (and before a Gauntlet run).**
+**What changed since the editor last built determines whether you need to close the editor at all.**
 
-The active editor holds an exclusive write lock on `<session-project-root>/Saved/Logs/<ProjectName>.log` (where `<ProjectName>` matches the `.uproject` filename — e.g. `CkPlugins.log`). Probe the lock:
+- **C++ changed** (`.h`/`.cpp`, `*.Build.cs`, `*.uplugin`, or top-level source layout) → **build path**: single-shot `--build --test`, and the editor **must be closed** (the pre-flight table below enforces this). Building while the editor holds its module DLLs corrupts hot-reload state, and two editors fight over `Saved/`/`Intermediate/`.
+- **AngelScript / content only** (`.as`, `.uasset`, config — no C++) → **test-only path**: a standalone `--test` invocation that can run **while your editor stays open**, under the quiescence protocol below. There is nothing to rebuild — the toolbox spawns its own headless editor to run the tests, and (verified) that coexists with your open editor as long as no script/source files change during the run.
+
+If you're unsure whether your edits count as "C++ changed," treat it as the build path — a needless rebuild is cheap; skipping a needed one runs tests against stale code.
+
+> **Note on `--config` for the test-only path:** `--config` is a `->needs(--build)` sub-flag, so a standalone `--test` ignores it and runs whatever config is already built (Development by default). That's expected — you're not rebuilding.
+
+## Pre-flight: editor coexistence decision table
+
+The toolbox spawns its own editor. Whether a *different* editor already open on this project is a problem depends on what you're running:
+
+| Invocation | Another editor open? | Action |
+|---|---|---|
+| any `--build` (incl. `--build --test` / `--build --gauntlet`) | yes | **Wait for it to close** — build + editor DLL/hot-reload contention is real (probe + wait loop below) |
+| standalone `--test` | yes | **Proceed with the editor open** — follow the quiescence protocol below |
+| standalone single `--gauntlet <Test>` | yes | Proceed under the same protocol (each run is a fresh `-game` boot) |
+| `--gauntlet all` | yes | **Prefer waiting** — the ~25 min run makes a mid-run script edit far more likely |
+| anything | no | proceed |
+
+Detection is the same in every row — the active editor holds an exclusive write lock on `<session-project-root>/Saved/Logs/<ProjectName>.log` (where `<ProjectName>` matches the `.uproject` filename — e.g. `BusterBlock.log`). Probe it:
 
 ```powershell
 try { [IO.File]::Open('<session-project-root>/Saved/Logs/<ProjectName>.log', 'Open', 'Write', 'None').Close(); 'free' } catch { 'locked' }
 ```
 
-If `'free'` (or the file doesn't exist) → proceed. If `'locked'` → another editor is up. **Wait it out** — do not kill the process, do not stomp the lock. Use a background `until ! <probe>; do sleep 60; done` loop so the wait is event-driven and you get a completion notification when it's free:
+**When the table says "wait"** (`'locked'` and you're on a build path): do not kill the process, do not stomp the lock. Use a background loop so the wait is event-driven and you get a completion notification when it's free:
 
 ```bash
 until ! powershell -NoProfile -Command "try { [IO.File]::Open('<session-project-root>/Saved/Logs/<ProjectName>.log', 'Open', 'Write', 'None').Close(); exit 0 } catch { exit 1 }"; do echo "$(date -u +%H:%M:%S) editor still up, sleeping 60s..."; sleep 60; done
@@ -35,7 +54,28 @@ until ! powershell -NoProfile -Command "try { [IO.File]::Open('<session-project-
 
 Run that in the background with a generous timeout (10+ min). Don't poll yourself — wait for the completion notification, then proceed.
 
-**Caveat:** if YOU are the one holding the lock from a still-running prior toolbox invocation that you started, the wait will never return — close the toolbox/editor first (or wait for it to finish) before starting a new one. The wait pattern is for *other* sessions or stale processes.
+**Caveat:** if YOU are holding the lock from a still-running prior toolbox invocation that you started, the wait will never return — close that toolbox/editor first. The wait pattern is for *other* sessions or stale processes.
+
+### Quiescence protocol (test-only path, editor open)
+
+The one hazard of running `--test` beside your open editor: if any AngelScript/source file changes *during* the run, your live editor hot-reloads and rewrites `Script/Generated/*` mid-run; the toolbox's headless editor can't full-reload, logs `Full Reload is required ... keeping old script code`, and that Error is attributed to whatever test is running → spurious failures/timeouts. The protocol removes that hazard:
+
+1. **Pre-check that the live editor has settled.** Probe the tail of the live log:
+   ```powershell
+   Select-String -Path "<session-project-root>\Saved\Logs\<ProjectName>.log" -Pattern "==script reload total==|Full Reload is required" | Select-Object -Last 5
+   ```
+   If the most recent hit is a `Full Reload is required` line (a pending deferred regen), **don't start** — ask the user to focus the editor so the regen completes, then re-probe. If the last line is an old `==script reload total==` with nothing after it, proceed.
+2. **Freeze edits for the duration.** From toolbox launch until the completion notification: make **no** edits to `.as` / `.h` / `.cpp` (anything that triggers script regen), and print a user-facing warning in chat:
+   > "Running tests beside your open editor — please don't save AngelScript/source edits until it completes (~N min), or the run may report false failures."
+
+   Also caution (there's no cheap way to probe it): if you have the **AutoTests map open and dirty** in your editor, the headless run's populator auto-save can conflict — save or close that map first.
+3. **Red-run forensics.** If the run comes back red *and* it ran beside a live editor, before trusting any failure:
+   ```powershell
+   Select-String -Path "Saved\Logs\Test-Editor.log" -Pattern "Full Reload is required"
+   ```
+   (Use `BuildTest.log` for the single-shot form.) Any hit → the run is **contaminated, not failed**: re-run the failed subset after the editor is quiescent instead of debugging the failures. Likewise, a *cluster* of settle-timer flakes beside a live editor is machine-contention contamination — same remedy.
+
+> **Toolbox v1.19+** prints its own `LIVE EDITOR DETECTED` advisory, adds a `Contaminated: N` summary line, exits `78` when only contamination remains (no real failures), and auto-retries contaminated tests once — so step 3's manual grep becomes a fallback for older toolbox versions. Exit `77` means a `--build` was refused because an editor is open (pass `--allow-live-editor` to override, or `--no-wait` to fail fast instead of waiting). (Exit `76` is the pre-existing "test boot's own AngelScript failed to compile, ran stale bytecode" code — unrelated to a live editor.)
 
 ## Procedure
 
@@ -65,7 +105,7 @@ Single-shot needs the test pattern up front (both phases run in one command). De
 
 ### Phase 3: Build + test (single-shot)
 
-**First run the Pre-flight editor-lock check** (see above) — once, before this invocation.
+**First consult the Pre-flight decision table** (see above) — once, before this invocation. The single-shot `--build --test` is a build path, so it needs the editor closed; for an AS/content-only change prefer the standalone `--test` (Separate-logs variant) which can run with the editor open.
 
 Run in the **background** — a CK-family editor build is 5-30 minutes. Use a 600000 ms (10 min) timeout, then await the completion notification. **Do not poll the log.**
 
@@ -117,10 +157,12 @@ These bit before and the toolbox docs don't all flag them:
 - **Don't time out aggressively.** 5-30 min is normal for a CK editor build. 10 min is the floor; raise it if you've seen this project run longer historically.
 - **Angelscript bindings regenerate on editor startup** — and `--test` spins up the editor — so if your C++ change exposed a new API and your AS callsites use it, the test phase exercising the AS path implicitly verifies the AS regeneration too.
 - **Do not commit `Saved/Logs/BuildTest.log`** (or the `Build-Editor.log` / `Test-Editor.log` of the separate-logs variant). They're scratch output. The standard `Saved/` is gitignored at the project root, but double-check if you ever stage selectively.
+- **Don't edit AngelScript/source during a test-only run beside a live editor.** A saved `.as` edit makes the live editor rewrite `Script/Generated/*` mid-run and the headless test editor logs `Full Reload is required` — grep for that phrase before trusting a red run (see the Quiescence protocol). Freeze edits until the completion notification.
+- **Exit `77`/`78` from toolbox v1.19+ are not test failures.** `77` = a `--build` was refused because an editor is open; `78` = the run was inconclusive because a live editor contaminated it (`Contaminated: N` in the summary), with no genuine failures. Neither means a real test failed. (`76` is the older "AngelScript failed to compile in the test boot itself" code — also not a test failure.)
 
 ## Gauntlet variant (process-level tests)
 
-Projects that ship a `GauntletTests.json` at the project root (BusterBlock does) can run process-level Gauntlet tests through the same toolbox (v1.12+). Same pre-flight editor-lock check applies — a Gauntlet run boots the project's editor binary in `-game` mode. Compose it single-shot with `--build` so build → gauntlet share one window and one log, same as the default flow above.
+Projects that ship a `GauntletTests.json` at the project root (BusterBlock does) can run process-level Gauntlet tests through the same toolbox (v1.12+). The Pre-flight decision table applies — a single `--gauntlet <Test>` boots the project's editor binary in `-game` mode and can run with your editor open (quiescence protocol), but `--build --gauntlet` needs the editor closed and `--gauntlet all` prefers waiting (its ~25 min run widens the mid-run-edit window). Compose it single-shot with `--build` so build → gauntlet share one window and one log, same as the default flow above.
 
 ```powershell
 Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --build --config=<Configuration> --target=Editor --gauntlet <TestName|all> --output=Saved/Logs/Gauntlet-Editor.log --project="<session-project-root>"
@@ -144,7 +186,7 @@ Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --build --conf
 
 ## Separate-logs variant (two invocations)
 
-Use this **only** when you specifically want the build and test output in separate files — e.g. to grep them independently, or to iterate on tests without rebuilding while keeping the build log around. It runs build and test as two separate invocations, each with its own `--output` and its own pre-flight check:
+Use this when you specifically want the build and test output in separate files — e.g. to grep them independently, or to iterate on tests without rebuilding while keeping the build log around. **This is also the form the test-only path uses** — the standalone `--test` invocation below is exactly what you run (editor open, under the quiescence protocol) for an AS/content-only change. It runs build and test as two separate invocations, each with its own `--output` and its own pre-flight decision:
 
 ```powershell
 Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --build --config=<Configuration> --target=Editor --output=Saved/Logs/Build-Editor.log --project="<session-project-root>"
