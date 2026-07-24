@@ -22,7 +22,7 @@ The default is a **single** `--build --test` invocation writing **one** log (`Sa
 **What changed since the editor last built determines whether you need to close the editor at all.**
 
 - **C++ changed** (`.h`/`.cpp`, `*.Build.cs`, `*.uplugin`, or top-level source layout) → **build path**: single-shot `--build --test`, and the editor **must be closed** (the pre-flight table below enforces this). Building while the editor holds its module DLLs corrupts hot-reload state, and two editors fight over `Saved/`/`Intermediate/`.
-- **AngelScript / content only** (`.as`, `.uasset`, config — no C++) → **test-only path**: a standalone `--test` invocation that can run **while your editor stays open**, under the quiescence protocol below. There is nothing to rebuild — the toolbox spawns its own headless editor to run the tests, and (verified) that coexists with your open editor as long as no script/source files change during the run.
+- **AngelScript / content only** (`.as`, `.uasset`, config — no C++) → **test-only path**: a standalone `--test` invocation that can run **while your editor stays open**, under the quiescence protocol below. There is nothing to rebuild — the toolbox spawns its own headless editor to run the tests, and (verified) that coexists with your open editor as long as no script/source files change during the run. For *iterative* test runs (running `--test` repeatedly), **pre-warm a resident test editor once** and route runs into it to skip the ~45s per-run boot — see [Warm server](#warm-server-zero-boot-iteration) below.
 
 If you're unsure whether your edits count as "C++ changed," treat it as the build path — a needless rebuild is cheap; skipping a needed one runs tests against stale code.
 
@@ -195,6 +195,27 @@ Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --test --test-
 ```
 
 **Cost:** this pops **two sequential** progress windows — the test invocation closes the build's window and opens its own, so you never see the whole run in one continuous view. Prefer the single-shot default above unless the separate files earn their keep.
+
+## Warm server (zero-boot iteration)
+
+**Toolbox v1.20+.** Every `--test` normally boots a fresh headless editor (~45s) and tears it down. When you're iterating — running the test-only path repeatedly on the same AS/content — you can pay that boot **once** by keeping a resident **warm server**: a headless `-CkTestBridgeServe` editor that serves test runs over a file-drop bridge (the CkTestsBridge module). It coexists with your own open editor (headless, `-nullrhi`, and it declines AngelScript-regen ownership so your editor stays primary for codegen).
+
+**Pre-warm the moment you start writing tests**, so the boot overlaps your edit time:
+
+```powershell
+Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --warm-server start --project="<session-project-root>"
+```
+
+`start` is **idempotent** (a no-op if one is already serving) and blocks until the server arms (~60s cold) or times out. Then route runs into it with `--live` — no boot:
+
+```powershell
+Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --test --live --test-pattern <Pattern> --output=Saved/Logs/Test-Editor.log --project="<session-project-root>"
+```
+
+- **`--live`** routes into the warm server (or *launches* one if none is serving, then routes — falling back to a fresh boot only if it can't come up). `--no-live` forces today's fresh-boot path.
+- **`--warm-server status`** prints the serving pid / idle-or-busy (exit 0 serving, 1 none); **`--warm-server stop`** terminates an idle server. The server also self-quits after ~15 min idle or a ~2 h wall-clock cap, so a forgotten one cleans itself up.
+- **Fidelity:** live/warm results are for **iteration**. Because state accumulates across runs in a long-lived editor, a **fresh boot** (`--no-live`, or the clean `--build --test` build path) stays the **gate of record** for any "done" / "no regressions" claim. Re-run `--no-live` before reporting.
+- The warm server is protected from a concurrent `--build` by the same editor-open gate (`--build` waits / exits 77 while it's running) — so don't try to `--build` while a warm server is up; `--warm-server stop` it first.
 
 ## Arguments
 
