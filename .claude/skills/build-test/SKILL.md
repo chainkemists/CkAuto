@@ -200,20 +200,21 @@ Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --test --test-
 
 **Toolbox v1.20+.** Every `--test` normally boots a fresh headless editor (~45s) and tears it down. When you're iterating — running the test-only path repeatedly on the same AS/content — you can pay that boot **once** by keeping a resident **warm server**: a headless `-CkTestBridgeServe` editor that serves test runs over a file-drop bridge (the CkTestsBridge module). It coexists with your own open editor (headless, `-nullrhi`, and it declines AngelScript-regen ownership so your editor stays primary for codegen).
 
-**Pre-warm the moment you start writing tests**, so the boot overlaps your edit time:
+**Pre-warm the moment you start writing tests**, so the boot overlaps your edit time. As an agent, pass `--no-progress-window` — v1.22+ otherwise opens a LogViewer window on the user's desktop (that window is for a *human* running this by hand, not for you):
 
 ```powershell
-Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --warm-server start --project="<session-project-root>"
+Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --warm-server start --no-progress-window --project="<session-project-root>"
 ```
 
 `start` is **idempotent** (a no-op if one is already serving) and blocks until the server arms (~60s cold) or times out. Then route runs into it with `--live` — no boot:
 
 ```powershell
-Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --test --live --test-pattern <Pattern> --output=Saved/Logs/Test-Editor.log --project="<session-project-root>"
+Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --test --live --no-progress-window --test-pattern <Pattern> --output=Saved/Logs/Test-Editor.log --project="<session-project-root>"
 ```
 
 - **`--live`** routes into the warm server (or *launches* one if none is serving, then routes — falling back to a fresh boot only if it can't come up). `--no-live` forces today's fresh-boot path.
 - **`--warm-server status`** prints the serving pid / idle-or-busy (exit 0 serving, 1 none); **`--warm-server stop`** terminates an idle server. The server also self-quits after ~15 min idle or a ~2 h wall-clock cap, so a forgotten one cleans itself up.
+- **Window (v1.22+, humans only):** run interactively *without* `--no-progress-window` and `--warm-server start` opens ONE LogViewer for the server's whole life — boot → idle → the test progress of routed `--live` runs (they execute inside it) → idle — closed by `--warm-server stop`. A live run reuses that window rather than popping a second. As an agent, always pass `--no-progress-window` (above) so nothing pops on the user's desktop.
 - **Fidelity:** live/warm results are for **iteration**. Because state accumulates across runs in a long-lived editor, a **fresh boot** (`--no-live`, or the clean `--build --test` build path) stays the **gate of record** for any "done" / "no regressions" claim. Re-run `--no-live` before reporting.
 - The warm server is protected from a concurrent `--build` by the same editor-open gate (`--build` waits / exits 77 while it's running) — so don't try to `--build` while a warm server is up; `--warm-server stop` it first.
 
