@@ -81,16 +81,23 @@ The one hazard of running `--test` beside your open editor: if any AngelScript/s
 
 ### Phase 1: Confirm config
 
-If the user's request includes a config keyword, use it. Otherwise ask:
-
-> "Which editor configuration — DebugGame Editor or Development Editor?"
+If the user's request includes a config keyword, use it:
 
 | User says | Flag |
 |---|---|
 | `dev` / `development` | `--config=Development` |
 | `debug` / `debuggame` | `--config=DebugGame` |
 
-If unsure, default to **DebugGame** for code-fix iteration (faster link, debuggable symbols).
+Otherwise **omit `--config` entirely** — the toolbox resolves it from its per-project
+settings / `Auto` (= the last-built config, read from the newest `Binaries/Win64/*.target`
+receipt), which follows whatever the IDE last built.
+
+**Never volunteer an explicit config the user didn't name.** On unique-build-environment
+targets every module DLL links a per-config `Default.rc2.res`, so a config FLIP relinks
+~all (~1600) module DLLs — and alternating configs between toolbox runs and the user's IDE
+causes recurring machine-wide relink storms in BOTH directions. The toolbox's
+config-following default (v1.6–v1.8) exists precisely to prevent this; an explicit
+`--config` bypasses it.
 
 ### Phase 2: Decide what to test
 
@@ -112,10 +119,11 @@ Run in the **background** — a CK-family editor build is 5-30 minutes. Use a 60
 The project root is the **primary working directory of the current session** — whatever repo Claude Code was launched from. However, if the changed files live in a *different* project (e.g. work was done in a sibling repo like BusterBlock while the session root is CkPlugins), build that project instead. Always `Set-Location` to the project being built explicitly before invoking the toolbox so the relative `./CkAuto/` and `--project=` paths resolve correctly.
 
 ```powershell
-Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --build --config=<Configuration> --target=Editor --test --test-pattern <Pattern> --output=Saved/Logs/BuildTest.log --project="<session-project-root>"
+Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --build --target=Editor --test --test-pattern <Pattern> --output=Saved/Logs/BuildTest.log --project="<session-project-root>"
 ```
 
-(Drop `--test-pattern` for the `all` case.) The test phase only runs if the build succeeded.
+(Drop `--test-pattern` for the `all` case. Add `--config=<Configuration>` ONLY when the user
+named a config in Phase 1.) The test phase only runs if the build succeeded.
 
 **Do NOT** pass `--generate` for normal iteration — it forces a project-files regeneration that adds time for no benefit. Use it only when a `*.Build.cs`, `*.uplugin`, or top-level source layout has changed since the previous build.
 
@@ -158,7 +166,7 @@ These bit before and the toolbox docs don't all flag them:
 - **Angelscript bindings regenerate on editor startup** — and `--test` spins up the editor — so if your C++ change exposed a new API and your AS callsites use it, the test phase exercising the AS path implicitly verifies the AS regeneration too.
 - **Do not commit `Saved/Logs/BuildTest.log`** (or the `Build-Editor.log` / `Test-Editor.log` of the separate-logs variant). They're scratch output. The standard `Saved/` is gitignored at the project root, but double-check if you ever stage selectively.
 - **Don't edit AngelScript/source during a test-only run beside a live editor.** A saved `.as` edit makes the live editor rewrite `Script/Generated/*` mid-run and the headless test editor logs `Full Reload is required` — grep for that phrase before trusting a red run (see the Quiescence protocol). Freeze edits until the completion notification.
-- **Exit `77`/`78` from toolbox v1.19+ are not test failures.** `77` = a `--build` was refused because an editor is open; `78` = the run was inconclusive because a live editor contaminated it (`Contaminated: N` in the summary), with no genuine failures. Neither means a real test failed. (`76` is the older "AngelScript failed to compile in the test boot itself" code — also not a test failure.)
+- **Exit `77`/`78`/`79` are not test failures.** `77` = a `--build` was refused because an editor is open; `78` = the run was inconclusive because a live editor contaminated it (`Contaminated: N` in the summary), with no genuine failures; `79` = a `--build` was refused because an explicit `--config` would FLIP the build config (omit `--config`, or pass `--allow-config-flip` to accept the relink). None means a real test failed. (`76` is the older "AngelScript failed to compile in the test boot itself" code — also not a test failure.) **Note `79`, not 77, for the config flip:** it was authored as 77 on `dev` while 77/78 were already taken on the live-bridge branch, and moved on merge — if you see an older doc or binary citing 77 for a config flip, it predates v1.35.
 
 ## Gauntlet variant (process-level tests)
 
