@@ -215,8 +215,19 @@ Set-Location "<session-project-root>"; ./CkAuto/UnrealToolbox.exe --test --live 
 - **`--live`** routes into the warm server (or *launches* one if none is serving, then routes — falling back to a fresh boot only if it can't come up). `--no-live` forces today's fresh-boot path.
 - **`--warm-server status`** prints the serving pid / idle-or-busy (exit 0 serving, 1 none); **`--warm-server stop`** terminates an idle server. The server also self-quits after ~15 min idle or a ~2 h wall-clock cap, so a forgotten one cleans itself up.
 - **Window (v1.22+, humans only):** run interactively *without* `--no-progress-window` and `--warm-server start` opens ONE LogViewer for the server's whole life — boot → idle → the test progress of routed `--live` runs (they execute inside it) → idle — closed by `--warm-server stop`. A live run reuses that window rather than popping a second. As an agent, always pass `--no-progress-window` (above) so nothing pops on the user's desktop.
-- **Fidelity:** live/warm results are for **iteration**. Because state accumulates across runs in a long-lived editor, a **fresh boot** (`--no-live`, or the clean `--build --test` build path) stays the **gate of record** for any "done" / "no regressions" claim. Re-run `--no-live` before reporting.
-- The warm server is protected from a concurrent `--build` by the same editor-open gate (`--build` waits / exits 77 while it's running) — so don't try to `--build` while a warm server is up; `--warm-server stop` it first.
+- **Fidelity:** live/warm results are for **iteration**; a **fresh boot** (`--no-live`, or the clean `--build --test` build path) stays the **gate of record** for any "done" / "no regressions" claim. Re-run `--no-live` before reporting. *Measured 2026-07-25, so you know what this caveat is and isn't:* a full 1271-test suite through a warm server showed **no state accumulation** (throughput tracked test weight, not elapsed time) and **full verdict parity** with fresh boots (13 deterministic failures reproduced identically, 10-of-10 by name on the largest cluster). So the rule is about process freshness as a matter of principle — not a known divergence.
+- **`--build` handles the warm server for you (v1.25+).** It stops a warm server *this toolbox launched* before building, then proceeds. You do **not** need to `--warm-server stop` first. Ownership is checked against a launch sentinel (`pid` + process creation time since v1.34), so a server the toolbox does **not** own — in particular the user's own interactive editor — is never terminated; `--build` waits for that one instead.
+
+### Borrowing the USER's editor (`--live` into an interactive session)
+
+`--live` can route into the user's own open editor, not just a warm server — but only if **they opted in**, and it is **off by default**. Know the cost before you invoke it:
+
+- **Opt-in:** Editor Preferences → Ck → **Ck Test Bridge → ServeMode**. `Off` (default) = that editor never serves. `Allow` = it may be borrowed. Persisted per-user, never committed.
+- **A plain `--test` (Auto) DECLINES an interactive editor** and fresh-boots, printing *"Not routing into that editor…"*. That is deliberate, not a bug — borrowing someone's session is an explicit act, so it requires `--live`.
+- ⚠ **It replaces their open level and does not restore it.** Automation loads a map per test, so when the run ends they are left on the last test map and must reopen their own level. **Say so before you do it.** Their *work* is never at risk — a dirty world makes the run refuse outright (`dirtyWorld`) — what they lose is their place.
+- PIE runs visibly in their window during the suite, and the window title shows `[CkTestBridge: SERVING]` / `RUNNING TESTS`.
+- Focus does **not** matter (measured: 49s focused vs 52s unfocused vs 2m00s fresh-booted, same 37 tests). Any older note saying the editor must be foregrounded is wrong — that was a misdiagnosis of the toolbox's own poll cadence.
+- **Prefer a warm server.** It dominates on every axis except RAM: no map hijack, no PIE in their window, no focus questions.
 
 ## Arguments
 
