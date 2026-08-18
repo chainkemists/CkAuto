@@ -79,6 +79,36 @@ The one hazard of running `--test` beside your open editor: if any AngelScript/s
 
 ## Procedure
 
+### Phase 0: Decide whether to run NOW, and how wide
+
+Invoking this skill is not free — a full suite is ~10 min (auto-sized lanes; ~23 min serial) and a
+`--build --test` adds 5-30 min of editor build. Before running, answer both:
+
+**Is this the right moment?** If you are partway through a planned series of related edits, finish
+them first and run **once**. The build cost is per-invocation, not per-edit. Run mid-series only
+when a change is novel/risky enough that you want to know immediately, when one change's
+correctness gates the design of the next, or when you are actively debugging (there the loop is the
+work — scope hard and use the warm server).
+
+**How wide?**
+
+| You are… | Scope |
+|---|---|
+| iterating on one feature | `--test-pattern <Module>` + warm server (`--test --live`) — seconds per run |
+| verifying a finished batch | `--test-pattern` covering **every** module the batch touched |
+| claiming done / no regressions / about to commit | full suite, `--test --no-live` — **once**, at the end |
+
+A bare `--test` (no pattern) is the **gate**, not an iteration tool. If you have run it more than
+once in a session without the code having changed meaningfully in between, you are burning the
+user's time.
+
+**Capture the baseline first.** Record the starting pass/fail counts and the *names* of
+already-failing tests before your first change — "no regressions" is meaningless without a number
+to diff against, and CK-family projects carry known pre-existing failures.
+
+**Report the scope you actually ran.** A green `--test-pattern Inventory` is not a green suite; say
+which pattern produced the result.
+
 ### Phase 1: Confirm config
 
 If the user's request includes a config keyword, use it:
@@ -106,7 +136,8 @@ Single-shot needs the test pattern up front (both phases run in one command). De
 1. If the user passed a non-config token (e.g. `/build-test debug Goap`), use it verbatim.
 2. Otherwise infer from your own recent edits: look at which Plugins / Source modules you touched. The substring of the module name is enough — `CkGoap` → `Goap`, `CkInventory` → `Inventory`.
 3. If you can't infer, ask the user: "Test pattern? (e.g. `Goap`, `Inventory`, or `all`)".
-4. For `all`, omit `--test-pattern` entirely so every project test runs.
+4. For `all`, omit `--test-pattern` entirely so every project test runs — reserve this for the
+   end-of-work gate (Phase 0), or when the user asked for it by name.
 
 **The matcher is forgiving**: case-insensitive substring tokens, any order. `Goap`, `cktests.GOAP`, and `goap.basicplan` all work. You don't need the full dotted test path.
 
