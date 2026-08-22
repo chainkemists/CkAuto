@@ -139,6 +139,24 @@ Single-shot needs the test pattern up front (both phases run in one command). De
 4. For `all`, omit `--test-pattern` entirely so every project test runs — reserve this for the
    end-of-work gate (Phase 0), or when the user asked for it by name.
 
+> **"Every project test" is decided by NAME, and on CK-family projects that silently drops most of
+> the C++ suite.** A test counts as a project test only if its first dotted segment matches an enabled
+> plugin or module name. `Ck` and `Bb` are house conventions, not plugins — there is no `Ck.uplugin` —
+> so `Ck.Snapshot.*`, `Bb.Snapshot.*`, `Ck.Jolt.*`, `Ck.PathNetwork.*` and their siblings classify as
+> **engine** tests and a bare `--test` skips them. Measured on BusterBlock 2026-08-22: **754 of 1029
+> registered C++ tests excluded**, every save/load gate among them, while the run still reported a
+> healthy green. Automation flags are irrelevant — a `ProductFilter` test under `Ck.*` is dropped just
+> the same.
+>
+> **So the `all` gate on this project is:**
+> ```
+> --test --project-prefix Ck --project-prefix Bb
+> ```
+> `--project-prefix` (toolbox v1.43+) only ever *widens* a run. From v1.43 a no-pattern run also
+> **prints what it excluded** (`[project-filter] EXCLUDED N of M …`) — if you see that line naming a
+> root that is yours, add it. On a toolbox older than v1.43 neither exists; use `--test-pattern Ck`
+> as the substitute sweep and say that is what you ran.
+
 **The matcher is forgiving**: case-insensitive substring tokens, any order. `Goap`, `cktests.GOAP`, and `goap.basicplan` all work. You don't need the full dotted test path.
 
 ### Phase 3: Build + test (single-shot)
